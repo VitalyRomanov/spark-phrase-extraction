@@ -106,10 +106,11 @@ total_ngrams = ngram_counts.map(lambda x: x[1]).reduce(lambda x, y: x + y)
 # bigramCounts_bc = sc.broadcast(bigram_counts.collectAsMap())
 
 
-ngram_counts.sortBy(lambda x: x[1], False)\
+ngram_counts\
     .filter(lambda x: x[1] > COUNT_THRESHOLD)\
     .map(lambda x: "%s\t%d" % ("_".join(x[0]), x[1]))\
     .saveAsTextFile("%dgram_count.lenta" % ngram_len)
+    #.sortBy(lambda x: x[1], False)\
 
 def add_pos_tags(record):
     gram_count, npmi = record
@@ -122,7 +123,7 @@ def add_pos_tags(record):
 ngram_counts.map(lambda gram: (gram, npmi(gram, vocabMap_bc, total_words, total_ngrams)))\
     .filter(lambda x: x[0][1] > COUNT_THRESHOLD)\
     .filter(lambda gram: gram[1] > NPMI_THRESHOLD)\
-    .sortBy(lambda x: x[1], False)\
     .map(lambda x: "%s\t%d\t%.4f" % ("_".join(x[0][0]), x[0][1], x[1]))\
     .saveAsTextFile("%dgram_filtered.lenta" % ngram_len)
+    #.sortBy(lambda x: x[1], False)\
 \
