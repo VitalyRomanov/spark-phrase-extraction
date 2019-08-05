@@ -1,13 +1,26 @@
 
 import sys
 from math import log
+import argparse
+import random
+from functools import reduce
 from util import init_spark, init_spark_tagger, init_spark_tokenizer, init_spark_sentencizer, process_wiki_json
 tokenize = lambda x: x.split()
 
 COUNT_THRESHOLD = 2
-NPMI_THRESHOLD = 0.5
+NPMI_THRESHOLD = 0.75
 
+parser = argparse.ArgumentParser(description='Process some integers.')
+parser.add_argument('vocab', type=str,
+                    help='Path to vocabulary')
+parser.add_argument('corpus',type=str,
+                    help='Path to corpus')
+parser.add_argument('ngram',type=int,
+                    help='Length of ngram')
+parser.add_argument('subsample',type=float,
+                    help='Subsample amount')
 
+args = parser.parse_args()
 
 
 spark, sc = init_spark()
@@ -15,36 +28,22 @@ tokenize = init_spark_tokenizer(sc)
 tag_rus = init_spark_tagger(sc, 'rus')
 sent_tokenize = init_spark_sentencizer(sc, 'rus')
 
-# print(tag_rus(("пришел", "поздно")))
+vocabulary_location = args.vocab
+corpus_location = args.corpus
+ngram_len = args.ngram
+subsample_factor = 1. - args.subsample
 
-# sys.exit()
 
-vocabulary_location = sys.argv[1]
-corpus_location = sys.argv[2]
-
-# voc = Vocabulary.load(vocabulary_location)
 corpus = spark.sparkContext.textFile(corpus_location)
 vocabulary_file = spark.sparkContext.textFile(vocabulary_location)
 
-# broad_voc = spark.sparkContext.broadcast(voc)
 
-# def calculate_npmi(bigram, total_bigrams, vocab):
-#     voc = vocab.value
-#     ids = voc.tokens2ids(bigram[0])
-#     bigram_count = bigram[1]
-#     total_words = voc.word_count_sum
-#     freq_1 = voc.count[ids[0]]
-#     freq_2 = voc.count[ids[1]]
-#     pwmi = (log(bigram_count) - log(freq_1) - log(freq_2) + 2 * log(total_words) - log(total_bigrams)) / (log(total_bigrams) - log(bigram_count))
-#     return pwmi * bigram_count
-
-
-def valid_n_gram(bigram_count_npmi):
+def valid_n_gram(ngram_count_npmi):
 
     allowed = {'ADJ', "NOUN", 'S'}
 
-    bigram_count, npmi = bigram_count_npmi
-    bigram, count = bigram_count
+    ngram_count, npmi = ngram_count_npmi
+    ngram, count = ngram_count
 
     if count < COUNT_THRESHOLD:
         return False
@@ -57,55 +56,45 @@ def valid_n_gram(bigram_count_npmi):
             return True
         return False
     
-    return item_allowed(bigram[0]) and item_allowed(bigram[1])    
+    return all(item_allowed(gram) for gram in ngram)# item_allowed(bigram[0]) and item_allowed(bigram[1])    
 
-def npmi(bigram_count, vocabulary, total_words, total_grams):
+def npmi(ngram_count, vocabulary, total_words, total_grams):
     voc = vocabulary.value
     # gram_freq = gram_frequency.value
 
-    bigram, gram_freq = bigram_count
+    ngram, gram_freq = ngram_count
 
-    p_x = voc[bigram[0]]
-    p_y = voc[bigram[1]]
-    p_x_y = gram_freq
+    p_ = reduce(lambda x, y: x*y, [voc[gram]/total_words for gram in ngram])
 
-    pmi = log(p_x_y / (p_x * p_y))
+    p_x_y = gram_freq / total_grams
+
+    pmi = log(p_x_y / p_)
 
     npmi = pmi / (- log(p_x_y) + 1e-18)
 
-    return npmi
-
-    #     if npmi > threshold:
-    #         # Allow only nouns and adjectives as stable phrases
-    #         allowed = {'JJ', "NN", 'NNP', 'NNS'}
-    #         tagged = pos_tag(bigram)
-    #         if tagged[0][1] in allowed and tagged[1][1] in allowed:
-    #             candidates[bigram] = npmi
-    #             # candidates.add((bigram, npmi))
-    #             # candidates.add(bigram)
-    #             # print(bigram, npmi)
-    # return candidates
+    return npmi / (ngram_len - 1)
 
 
-# bigram_counts = corpus.map(process_wiki_json)\
-#     .flatMap(lambda line: sent_tokenize(line))\
-#     .map(lambda sent: tag_rus(tokenize(sent)))\
-#     .flatMap(lambda tokens: [(tokens[i], tokens[i+1]) for i in range(len(tokens)-1)])\
-#     .map(lambda bigram: (bigram, 1))\
-#     .reduceByKey(lambda x,y: x+y)
+def split_in_grams(tokens):
+    return [tuple(tokens[i:i+ngram_len]) for i in range(len(tokens) - (ngram_len - 1))]
 
 
-bigram_counts = corpus.map(process_wiki_json)\
+def subsample(smth):
+    return random.random() < subsample_factor
+
+
+ngram_counts = corpus.map(process_wiki_json)\
     .map(tokenize)\
-    .flatMap(lambda tokens: [(tokens[i], tokens[i+1]) for i in range(len(tokens)-1)])\
-    .map(lambda bigram: (bigram, 1))\
+    .flatMap(split_in_grams)\
+    .filter(subsample)\
+    .map(lambda ngram: (ngram, 1))\
     .reduceByKey(lambda x,y: x+y)
 
 
 def parse_vocab_entry(line):
     parts = line.split("\t")
     # return ((parts[0], parts[1]), int(parts[2]))
-    return (parts[0], parts[1])
+    return (parts[0], int(parts[1]))
 
 
 vocab = vocabulary_file.map(parse_vocab_entry)
@@ -113,12 +102,14 @@ vocabMap_bc = sc.broadcast(vocab.collectAsMap())
 total_words = vocab.map(lambda x: x[1]).reduce(lambda x, y: x + y)
 
 
-total_bigrams = bigram_counts.map(lambda x: x[1]).reduce(lambda x, y: x + y)
+total_ngrams = ngram_counts.map(lambda x: x[1]).reduce(lambda x, y: x + y)
 # bigramCounts_bc = sc.broadcast(bigram_counts.collectAsMap())
 
 
-bigram_counts.sortBy(lambda x: x[1], False)\
-    .saveAsTextFile("bigram_count.lenta")
+ngram_counts.sortBy(lambda x: x[1], False)\
+    .filter(lambda x: x[1] > COUNT_THRESHOLD)\
+    .map(lambda x: "%s\t%d" % ("_".join(x[0]), x[1]))\
+    .saveAsTextFile("%dgram_count.lenta" % ngram_len)
 
 def add_pos_tags(record):
     gram_count, npmi = record
@@ -128,14 +119,10 @@ def add_pos_tags(record):
     return ((gram_pos, count), npmi)
 
 
-bigram_counts.map(lambda gram: (gram, npmi(gram, vocabMap_bc, total_words, total_bigrams)))\
+ngram_counts.map(lambda gram: (gram, npmi(gram, vocabMap_bc, total_words, total_ngrams)))\
+    .filter(lambda x: x[0][1] > COUNT_THRESHOLD)\
     .filter(lambda gram: gram[1] > NPMI_THRESHOLD)\
-    .map(lambda x: "%s_%s" % x[0])\
-    .saveAsTextFile("bigram_filtered.lenta")
-
-
-# total_bigrams = bigram_counts.map(lambda x: x[1]).reduce(lambda x, y: x + y)
-
-# bigram_score = bigram_counts.map(lambda bg: (calculate_npmi(bg, total_bigrams, broad_voc), bg[0])).sortByKey()
-
-# bigram_score.saveAsTextFile("bs.txt")
+    .sortBy(lambda x: x[1], False)\
+    .map(lambda x: "%s\t%d\t%.4f" % ("_".join(x[0][0]), x[0][1], x[1]))\
+    .saveAsTextFile("%dgram_filtered.lenta" % ngram_len)
+\
