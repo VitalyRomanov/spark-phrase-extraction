@@ -34,8 +34,8 @@ ngram_len = args.ngram
 subsample_factor = 1. - args.subsample
 
 
-corpus = spark.sparkContext.textFile(corpus_location)
-vocabulary_file = spark.sparkContext.textFile(vocabulary_location)
+corpus = sc.textFile(corpus_location)
+vocabulary_file = sc.textFile(vocabulary_location)
 
 
 def valid_n_gram(ngram_count_npmi):
@@ -83,12 +83,14 @@ def subsample(smth):
     return random.random() < subsample_factor
 
 
-ngram_counts = corpus.map(process_wiki_json)\
+ngram_counts_sorted = corpus.map(process_wiki_json)\
     .map(tokenize)\
     .flatMap(split_in_grams)\
     .filter(subsample)\
     .map(lambda ngram: (ngram, 1))\
-    .reduceByKey(lambda x,y: x+y)
+    .reduceByKey(lambda x,y: x+y)\
+    .filter(lambda x: x[1] > COUNT_THRESHOLD)\
+    .sortBy(lambda x: x[1], False)
 
 
 def parse_vocab_entry(line):
@@ -102,15 +104,17 @@ vocabMap_bc = sc.broadcast(vocab.collectAsMap())
 total_words = vocab.map(lambda x: x[1]).reduce(lambda x, y: x + y)
 
 
-total_ngrams = ngram_counts.map(lambda x: x[1]).reduce(lambda x, y: x + y)
-# bigramCounts_bc = sc.broadcast(bigram_counts.collectAsMap())
+total_ngrams = ngram_counts_sorted.map(lambda x: x[1]).reduce(lambda x, y: x + y)
+ngram_norm = ngram_counts_sorted.map(lambda x: x[1]).reduce(lambda x, y: max(x,y))
 
-
-ngram_counts\
-    .filter(lambda x: x[1] > COUNT_THRESHOLD)\
+ngram_counts_sorted\
     .map(lambda x: "%s\t%d" % ("_".join(x[0]), x[1]))\
-    .saveAsTextFile("%dgram_count.lenta" % ngram_len)
-    #.sortBy(lambda x: x[1], False)\
+    .saveAsTextFile("wiki_ru.%dgram_count" % ngram_len)
+    #
+
+ngram_counts_sorted\
+    .map(lambda x: "%s\t%.4f" % ("_".join(x[0]), x[1] / ngram_norm))\
+    .saveAsTextFile("wiki_ru.%dgram_count_normalized" % ngram_len)
 
 def add_pos_tags(record):
     gram_count, npmi = record
@@ -120,10 +124,18 @@ def add_pos_tags(record):
     return ((gram_pos, count), npmi)
 
 
-ngram_counts.map(lambda gram: (gram, npmi(gram, vocabMap_bc, total_words, total_ngrams)))\
-    .filter(lambda x: x[0][1] > COUNT_THRESHOLD)\
-    .filter(lambda gram: gram[1] > NPMI_THRESHOLD)\
-    .map(lambda x: "%s\t%d\t%.4f" % ("_".join(x[0][0]), x[0][1], x[1]))\
-    .saveAsTextFile("%dgram_filtered.lenta" % ngram_len)
-    #.sortBy(lambda x: x[1], False)\
-\
+scores = ngram_counts_sorted\
+    .map(lambda gram: (gram, npmi(gram, vocabMap_bc, total_words, total_ngrams)))\
+    
+scores.sortBy(lambda x: x[1], False)\
+    .map(lambda x: "%s\t%d\t%f" % ("_".join(x[0][0]), x[0][1], x[1]))\
+    .saveAsTextFile("wiki_ru.%dgram_scores" % ngram_len)
+    #.filter(lambda gram: gram[1] > NPMI_THRESHOLD)\
+
+scores.sortBy(lambda x: x[0][1] * x[1], False)\
+    .map(lambda x: "%s\t%f" % ("_".join(x[0][0]), x[0][1] / ngram_norm * x[1]))\
+    .saveAsTextFile("wiki_ru.%dgram_countscore" % ngram_len)
+
+
+
+
