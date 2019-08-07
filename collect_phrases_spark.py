@@ -15,6 +15,8 @@ parser.add_argument('vocab', type=str,
                     help='Path to vocabulary')
 parser.add_argument('corpus',type=str,
                     help='Path to corpus')
+parser.add_argument('output',type=str,
+                    help='Path to output')
 parser.add_argument('ngram',type=int,
                     help='Length of ngram')
 parser.add_argument('subsample',type=float,
@@ -109,12 +111,12 @@ ngram_norm = ngram_counts_sorted.map(lambda x: x[1]).reduce(lambda x, y: max(x,y
 
 ngram_counts_sorted\
     .map(lambda x: "%s\t%d" % ("_".join(x[0]), x[1]))\
-    .saveAsTextFile("wiki_ru.%dgram_count" % ngram_len)
+    .saveAsTextFile("%s.%dgram_count" % (args.output, ngram_len))
     #
 
 ngram_counts_sorted\
     .map(lambda x: "%s\t%.4f" % ("_".join(x[0]), x[1] / ngram_norm))\
-    .saveAsTextFile("wiki_ru.%dgram_count_normalized" % ngram_len)
+    .saveAsTextFile("%s.%dgram_count_normalized" % (args.output, ngram_len))
 
 def add_pos_tags(record):
     gram_count, npmi = record
@@ -129,12 +131,12 @@ scores = ngram_counts_sorted\
     
 scores.sortBy(lambda x: x[1], False)\
     .map(lambda x: "%s\t%d\t%f" % ("_".join(x[0][0]), x[0][1], x[1]))\
-    .saveAsTextFile("wiki_ru.%dgram_scores" % ngram_len)
+    .saveAsTextFile("%s.%dgram_scores" % (args.output, ngram_len))
     #.filter(lambda gram: gram[1] > NPMI_THRESHOLD)\
 
 scores.sortBy(lambda x: x[0][1] * x[1], False)\
     .map(lambda x: "%s\t%f" % ("_".join(x[0][0]), x[0][1] / ngram_norm * x[1]))\
-    .saveAsTextFile("wiki_ru.%dgram_countscore" % ngram_len)
+    .saveAsTextFile("%s.%dgram_countscore" % (args.output, ngram_len))
 
 
 
